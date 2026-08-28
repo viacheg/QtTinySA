@@ -57,7 +57,7 @@ if system() == "Linux":
 # force Qt to use OpenGL rather than DirectX for Windows OS
 # QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseDesktopOpenGL)
 
-logging.basicConfig(format="%(message)s", level=logging.info)
+logging.basicConfig(format="%(message)s", level=logging.INFO)
 threadpool = QtCore.QThreadPool()
 basedir = os.path.dirname(__file__)
 
@@ -66,7 +66,7 @@ app = QApplication.instance()
 if not app:
     app = QApplication([])
 app.setApplicationName('QtTinySA')
-app.setApplicationVersion(' v2.0.0')
+app.setApplicationVersion(' v2.0.1')
 
 # pyqtgraph custom exporters
 WWBExporter.register()
@@ -1325,11 +1325,11 @@ def locate_db(dbName):
         return personalDir
 
     # 3. if not, check if database file exists in the app directory
-        file_path = resource_path(dbName)
-        if os.path.isfile(file_path):
-            shutil.copy(file_path, personalDir)
-            logging.info(f'{dbName} copied from {file_path} to {personalDir}')
-            return personalDir
+    file_path = resource_path(dbName)
+    if os.path.isfile(file_path):
+        shutil.copy(file_path, personalDir)
+        logging.info(f'{dbName} copied from {file_path} to {personalDir}')
+        return personalDir
 
     # 4. If not, then look in current working folder & where the python file is stored/linked from
     workingDirs = [os.path.dirname(__file__), os.path.dirname(os.path.realpath(__file__)), os.getcwd()]
@@ -1517,11 +1517,12 @@ def connectActive():
     QtTSA.spur_box.currentIndexChanged.connect(tinySA.setting_change)
     QtTSA.lna_box.clicked.connect(tinySA.setting_change)
 
-    # frequencies
-    QtTSA.start_freq.valueChanged.connect(tinySA.setStartFreq)
-    QtTSA.stop_freq.valueChanged.connect(tinySA.setStartFreq)
-    QtTSA.centre_freq.valueChanged.connect(tinySA.setCentreFreq)  # centre/span mode
-    QtTSA.span_freq.valueChanged.connect(tinySA.setCentreFreq)  # centre/span mode
+    # frequencies  
+    QtTSA.start_freq.editingFinished.connect(tinySA.setStartFreq)
+    QtTSA.stop_freq.editingFinished.connect(tinySA.setStartFreq)
+    QtTSA.centre_freq.editingFinished.connect(tinySA.setCentreFreq)  # centre/span mode
+    QtTSA.span_freq.editingFinished.connect(tinySA.setCentreFreq)  # centre/span mode
+    
     QtTSA.band_box.currentIndexChanged.connect(band_changed)
     QtTSA.setRange.clicked.connect(tinySA.sweep_as_zoomed)
     QtTSA.setToMkr.clicked.connect(tinySA.setToMarker)

@@ -18,10 +18,9 @@ import numpy as np
 from PySide6.QtCore import QObject
 
 
-class Calc(QObject):
-    def __init__(self, frequencies, spotF):
-        super().__init__()
+class Calc():
 
+    @staticmethod
     def precision(frequencies, spotF):  # sets the marker indicated frequency precision
         span = frequencies[-1] - frequencies[0]
         HzPp = span / len(frequencies)  # Hz per point
@@ -36,13 +35,14 @@ class Calc(QObject):
             decimal = 6
         return decimal
 
+    @staticmethod
     def unit(spotF):
         index = int(np.log10(abs(spotF)))
         suffix = ['Hz', 'Hz', 'Hz', 'kHz', 'kHz', 'kHz', 'MHz', 'MHz', 'MHz', 'GHz', 'GHz']
         multiple = [1, 1, 1, 1e3, 1e3, 1e3, 1e6, 1e6, 1e6, 1e9, 1e9]
         return suffix[index], multiple[index]
 
-    # def maxMin(frequencies, levels, maskFreq):  # finds the signal max/min (indexes) for setting markers
+    @staticmethod
     def maxMin(frequencies, levels, limits):  # finds the signal max/min (indexes) for setting markers
         maskFreq = limits[0]
         high = limits[1]
