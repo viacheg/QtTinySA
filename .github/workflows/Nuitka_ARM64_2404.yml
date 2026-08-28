@@ -28,7 +28,7 @@ jobs:
 
     - name: Install Dependencies
       run: |
-          pip install -r src/requirements_arm64.txt
+          pip install -r src/requirements.txt
 
     # Build python script into a single executable
     - uses: Nuitka/Nuitka-Action@main
