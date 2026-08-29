@@ -18,10 +18,9 @@ import numpy as np
 from PySide6.QtCore import QObject
 
 
-class Calc(QObject):
-    def __init__(self, frequencies, spotF):
-        super().__init__()
+class Calc():
 
+    @staticmethod
     def precision(frequencies, spotF):  # sets the marker indicated frequency precision
         span = frequencies[-1] - frequencies[0]
         HzPp = span / len(frequencies)  # Hz per point
@@ -36,13 +35,14 @@ class Calc(QObject):
             decimal = 6
         return decimal
 
+    @staticmethod
     def unit(spotF):
         index = int(np.log10(abs(spotF)))
         suffix = ['Hz', 'Hz', 'Hz', 'kHz', 'kHz', 'kHz', 'MHz', 'MHz', 'MHz', 'GHz', 'GHz']
         multiple = [1, 1, 1, 1e3, 1e3, 1e3, 1e6, 1e6, 1e6, 1e9, 1e9]
         return suffix[index], multiple[index]
 
-    # def maxMin(frequencies, levels, maskFreq):  # finds the signal max/min (indexes) for setting markers
+    @staticmethod
     def maxMin(frequencies, levels, limits):  # finds the signal max/min (indexes) for setting markers
         maskFreq = limits[0]
         high = limits[1]
@@ -64,6 +64,43 @@ class Calc(QObject):
             nextMin = np.ma.masked_where(np.abs(frequencies[mini[-1]] - frequencies) < maskFreq, nextMin)
             mini.append(np.argmin(nextMin))
         return (list(frequencies[maxi]), list(frequencies[mini]))
+
+class FakePortInfo:
+    """Mimics serial.tools.list_ports_common.ListPortInfo using values supplied.  This code is from Claude ai"""
+
+    def __init__(self, device, name=None, description="n/a", hwid="n/a",
+                 vid=None, pid=None, serial_number=None, location=None,
+                 manufacturer=None, product=None, interface=None):
+        self.device = device
+        self.name = name if name is not None else device.rsplit("/", 1)[-1]
+        self.description = description
+        self.hwid = hwid
+        self.vid = vid
+        self.pid = pid
+        self.serial_number = serial_number
+        self.location = location
+        self.manufacturer = manufacturer
+        self.product = product
+        self.interface = interface
+
+    def __str__(self):
+        return "{} - {}".format(self.device, self.description)
+
+    def __eq__(self, other):
+        return isinstance(other, FakePortInfo) and self.device == other.device
+
+    def __hash__(self):
+        return hash(self.device)
+
+    def __getitem__(self, index):
+        return (self.device, self.description, self.hwid)[index]
+
+# fake_ports = [
+#     FakePortInfo(device=row.device, description=row.description, hwid=row.hwid,
+#                  vid=row.vid, pid=row.pid, serial_number=row.serial_number)
+#     for row in my_data_rows
+# ]
+
 
 def resource_path(filename: str) -> str:
     """Get resources path in a safe way to work on terminal AND in macOS app bundles."""

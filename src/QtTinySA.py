@@ -57,7 +57,7 @@ if system() == "Linux":
 # force Qt to use OpenGL rather than DirectX for Windows OS
 # QtCore.QCoreApplication.setAttribute(QtCore.Qt.ApplicationAttribute.AA_UseDesktopOpenGL)
 
-logging.basicConfig(format="%(message)s", level=logging.info)
+logging.basicConfig(format="%(message)s", level=logging.INFO)
 threadpool = QtCore.QThreadPool()
 basedir = os.path.dirname(__file__)
 
@@ -66,7 +66,7 @@ app = QApplication.instance()
 if not app:
     app = QApplication([])
 app.setApplicationName('QtTinySA')
-app.setApplicationVersion(' v2.0.0')
+app.setApplicationVersion(' v2.0.2')
 
 # pyqtgraph custom exporters
 WWBExporter.register()
@@ -117,7 +117,7 @@ class Analyser:
         self.memF = BytesIO()
         self.mkr_update_timer = QtCore.QTimer()
         self.dev_ref = []
-        self.dev_count = 0
+        # self.dev_count = 0
         self.depth = 50
         self.points = 101
 
@@ -142,16 +142,15 @@ class Analyser:
         usbInstr.signals.progress.connect(self.time_path_indicator)
         usbInstr.stopped.connect(self.allStopped)
         usbInstr.update_info.connect(self.set_device_info)
-        usbInstr.dev_enable.connect(self.set_enabled)
         self.mkr_update_timer.timeout.connect(self.updateMarker)
 
     @Slot()
-    def router(self, freq, levl, maxl, minl, buffer, dev_id, ser_num, timestamp, split, sweep_end):
+    def router(self, freq, levl, maxl, minl, buffer, port_in_use, ser_num, timestamp, split, sweep_end):
         '''Called by a signal from the measurement threads to route updates to
-           the spectrum trace(s) & recorder based on the device number and device count.
+           the spectrum trace(s) & recorder based on the port and device count.
            tuple 1 = (device, number of devices) tuple 2 = trace(s) to update
            If only 1 SA it updates all 4 traces. If 2 SAs: first=1&2, second=3&4; etc'''
-
+           
         routes = {(0, 1): (self.s0, self.s1, self.s2, self.s3),
                   (0, 2): (self.s0, self.s2),
                   (0, 3): (self.s0, None),
@@ -162,14 +161,27 @@ class Analyser:
                   (2, 3): (self.s2, None),
                   (2, 4): (self.s2, None),
                   (3, 4): (self.s3, None)}
-        route = routes.get((dev_id, self.dev_count))  # route is the list of spectrum instances
+
+        # only route for enabled ports, which may be a subset of connected ports depending on gui checkboxes
+        count = usbInstr.num_enabled
+        enabled_devices = [device.enabled for device in usbInstr.devices]
+        port_name = [port.device for port in usbInstr.ports]
+        enabled_ports = [port for enabled, port in zip(enabled_devices, port_name) if enabled]
         try:
-            self.updateGUI(route, freq, levl, maxl, minl, buffer, ser_num, dev_id, timestamp, split, sweep_end)
-            if usbInstr.recorders[dev_id].recording and sweep_end:
-                usbInstr.recorders[dev_id].record(freq, levl, ser_num)       
-        except TypeError:
-            logging.info(f'failed to route data from {dev_id} of {self.dev_count} to spectrum trace')
+            indx = enabled_ports.index(port_in_use)
+        except ValueError:
+            # may occur when a device is disabled, before its measurement thread re-starts
+            indx = 0
+
+        # create the data route, i.e. spectra to update, from the matching key tuple of the dictionary 'routes'
+        route = routes.get((indx, count))
+        if route is None:
+            logging.info(f'failed to route data from {indx} of {count} on {port_in_use} to spectrum trace')
             usbInstr.stop(restart=False)
+        else:
+            self.updateGUI(route, freq, levl, maxl, minl, buffer, ser_num, indx, timestamp, split, sweep_end)
+            if usbInstr.recorders[indx].recording and sweep_end:
+                usbInstr.recorders[indx].record(freq, levl, ser_num)       
 
     def setGUI(self):
         # connect GUI controls that don't interfere with restoration of data at startup
@@ -211,23 +223,13 @@ class Analyser:
             
         # hide the playback time slider
         QtTSA.vortex.hide()
-        
 
     @Slot()
-    def set_device_info(self, name, dev_id, sn, port):
-        # show device information in GUI
+    def set_device_info(self, port_num, description, tooltip, state):
         gui_ctrl = {0: QtTSA.dev0, 1: QtTSA.dev1, 2: QtTSA.dev2, 3: QtTSA.dev3}
-        desc = name[:12]
-        gui_ctrl.get(dev_id).setText(desc)
-        port = port + '\n'
-        name = name + '\n'
-        sn = 's/n ' + str(sn) + '\n'
-        gui_ctrl.get(dev_id).setToolTip(name + sn + port)
-        
-    @Slot()
-    def set_enabled(self, dev_id, setting):
-        gui_ctrl = {0: QtTSA.dev0, 1: QtTSA.dev1, 2: QtTSA.dev2, 3: QtTSA.dev3}
-        gui_ctrl.get(dev_id).setChecked(setting)
+        gui_ctrl.get(port_num).setText(description)
+        gui_ctrl.get(port_num).setToolTip(tooltip)
+        gui_ctrl.get(port_num).setChecked(state)
 
     def setting_change(self):
         if usbInstr.is_scanning:
@@ -238,35 +240,25 @@ class Analyser:
         boxes = [QtTSA.trace1, QtTSA.trace2, QtTSA.trace3, QtTSA.trace4]
         tint = str("background-color: '" + pen + "';")
         boxes[box].setStyleSheet(tint)
-
-    def count_enabled(self):
-        gui_ctrl = np.array((QtTSA.dev0.isChecked(), QtTSA.dev1.isChecked(),
-                            QtTSA.dev2.isChecked(), QtTSA.dev3.isChecked()), dtype=bool)
-        
-        # set the device enabled flags, which are used by 'renumber'
-        for i, device in enumerate(usbInstr.devices):
-            if device is not None:
-                device.enabled = gui_ctrl[i]
-        usbInstr.renumber(gui_ctrl.sum())
-        return gui_ctrl.sum()
             
     def split_scan(self, startF, stopF, points, split):
         # splits the spectrum start/stop variables across multiple devices
-        if not split or self.dev_count == 1:
+        if not split or usbInstr.num_enabled == 1:
             for spectrum in self.spectra:
                 spectrum.startF = startF
                 spectrum.stopF = stopF
                 spectrum.points = points  # set points per spectrum = future potential for different vals
             return
-        points = int(points/self.dev_count)
-        span = int((stopF - startF)/self.dev_count)
+        points = int(points/usbInstr.num_enabled)
+        span = int((stopF - startF)/usbInstr.num_enabled)
         starts = {1: (startF, startF, startF, startF),
                   2: (startF, startF+span, startF, startF+span),
                   3: (startF, startF+span, startF+2*span, 0),  # what happens to the zero?
                   4: (startF, startF+span, startF+2*span, startF+3*span)}
         for indx, spectrum in enumerate(self.spectra):
-            spectrum.startF = starts.get(self.dev_count)[indx]
-            spectrum.stopF = starts.get(self.dev_count)[indx] + span
+            # set the start and stop feqs for each trace, which is used by 
+            spectrum.startF = starts.get(usbInstr.num_enabled)[indx]
+            spectrum.stopF = starts.get(usbInstr.num_enabled)[indx] + span
             spectrum.points = points
 
     def scan(self):  # called by the scan/stop button
@@ -284,12 +276,9 @@ class Analyser:
             return
         
         self.mkr_update_timer.stop()  # stop it because updateGUI does it when scanning
-
-        for j in range(0, 4):
-            usbInstr.set_sa_info(j)
+        # usbInstr.set_sa_info()
 
         # set sweep and device-specific control values
-        self.dev_count = self.count_enabled()
         self.setPoints()
         startF = QtTSA.start_freq.value() * 1e6  # freq in Hz
         stopF = QtTSA.stop_freq.value() * 1e6
@@ -301,7 +290,7 @@ class Analyser:
         lna = self.lna()
         spur = self.spur()
         self.setGraphFreq(startF, stopF)
-        if self.dev_count == 0:
+        if usbInstr.num_enabled == 0:
             popUp(QtTSA, 'No devices enabled', 'Ok', 'Critical')
             return
         usbInstr.controls(rbw, attn, lna, spur)
@@ -313,7 +302,6 @@ class Analyser:
         self.split_scan(startF, stopF, self.points, split)
         self.set_gui_colours()
         self.set_arrays()
-        # self.timespectrum.set_wf_2D()
 
         # start device(s) scanning
         usbInstr.start(self.spectra, rbw, self.depth, maxF, interval, split, loop=True)
@@ -527,10 +515,7 @@ class Analyser:
             avg = levl
         
         for spectrum in route:
-            # enabled devices are renumbered below self.dev_count as the 'enabled' boxes are ticked
-            if spectrum is not None:
                 if sweep_end and ~np.all(np.isnan(self.wf_data)):
-                # this is still needed because the histogram_LUT uses the image data
                     spectrum.waterfall.setImage(self.wf_data, autoLevels=wf_auto)
                 
                 # update waterfall display if visible and if there is data
@@ -592,14 +577,13 @@ class Analyser:
         self.dev_ref = []
         if usbInstr.devices:
             for device in usbInstr.devices:
-                if device:
-                    if device.name in dev_name:
-                        if device.sweeping:
-                            popUp(QtTSA, "Cannot browse whilst a scan is running", 'Ok', 'Info')
-                        else:
-                            with QSignalBlocker(ui_name.device):
-                                ui_name.device.addItem(device.name + ' serial ' + str(device.sn))
-                                self.dev_ref.append(device)  # keep a reference to the device for file ops
+                if device.name in dev_name:
+                    if device.sweeping:
+                        popUp(QtTSA, "Cannot browse whilst a scan is running", 'Ok', 'Info')
+                    else:
+                        with QSignalBlocker(ui_name.device):
+                            ui_name.device.addItem(device.name + ' serial ' + str(device.sn))
+                            self.dev_ref.append(device)  # keep a reference to the device for file ops
             device = self.dev_ref[ui_name.device.currentIndex()]
 
     def file_browser(self):
@@ -742,19 +726,21 @@ class Analyser:
             
         self.stop_playback()
         QtTSA.record.setEnabled(False)
+        count = usbInstr.num_enabled
         if not usbInstr.is_scanning:
             QtTSA.scan_button.clicked.emit()
-        logging.debug(f'start recording from {self.dev_count} devices')
-        for i in range(self.dev_count):
+        logging.info(f'start recording from {count} devices')
+        for i in range(count):
             points = self.spectra[i].points
-            usbInstr.recorders[i].configure(points, i, self.dev_count)
+            usbInstr.recorders[i].configure_array(points, i, count)
             usbInstr.recorders[i].sn = usbInstr.devices[i].sn
             usbInstr.recorders[i].id = i
             usbInstr.recorders[i].recording = True
 
     def stop_recording(self):
         folder = settings.ui.save_folder.text()
-        for i in range(self.dev_count):
+        count = usbInstr.num_enabled
+        for i in range(count):
             if usbInstr.recorders[i].recording:
                 usbInstr.recorders[i].recording = False
                 usbInstr.recorders[i].save_recording(folder)
@@ -764,12 +750,12 @@ class Analyser:
     def start_playback(self, play):
         self.stop_recording()
         usbInstr.stop()
-        if np.isnan(usbInstr.recorders[0].data_arr).all():
+        # if np.isnan(usbInstr.recorders[0].data_arr).all():
+        if np.isnan(usbInstr.devices[0].data_arr).all():
             popUp(QtTSA, "No recorded spectrum data is loaded", 'Ok', 'Critical')
             return
-        for i in range(4):
-            if usbInstr.recorders[i].sweeping:
-                return
+        if usbInstr.is_scanning:
+            return
         
         if settings.ui.saveSweep.isChecked() and not save_location_valid():
             popUp(QtTSA, "The current save file location is not valid", 'Ok', 'Critical')
@@ -785,12 +771,12 @@ class Analyser:
                 QtTSA.vortex.setValue(0)
         
         # set the graph frequency axis to the maximum range of the loaded recordings
-        start = usbInstr.recorders[0].data_arr[0, 1]
-        stop = usbInstr.recorders[0].data_arr[0, -1]
-        self.dev_count = usbInstr.loaded_files
+        start = usbInstr.devices[0].data_arr[0, 1]
+        stop = usbInstr.devices[0].data_arr[0, -1]
+        file_count = usbInstr.loaded_files
         for i in range(usbInstr.loaded_files):
-            start = int(min(start, usbInstr.recorders[i].data_arr[0, 1]))
-            stop = int(max(stop, usbInstr.recorders[i].data_arr[0, -1]))
+            start = int(min(start, usbInstr.devices[i].data_arr[0, 1]))
+            stop = int(max(stop, usbInstr.devices[i].data_arr[0, -1]))
         self.setGraphFreq(start, stop)
 
         self.set_gui_colours()
@@ -803,29 +789,27 @@ class Analyser:
 
         # set the waterfall array size as the sum of the number of columns in all the loaded files
         points = []
-        for rec in usbInstr.recorders:
-            if ~np.isnan(rec.data_arr).all():  # array has been loaded
-                rec_pnts = np.size(rec.data_arr, axis=1) - 1  # number of columns
-                points.append(rec_pnts)
+        for device in usbInstr.devices:
+            if ~np.isnan(device.data_arr).all():  # array has been loaded
+                dev_pnts = np.size(device.data_arr, axis=1) - 1  # number of columns
+                points.append(dev_pnts)
         wf_points = sum(points)
         self.wf_data = np.full((self.depth, wf_points), np.nan, dtype=float)  
 
         # create and start the measurement playback worker threads
         split = QtTSA.split_scan.isChecked()
         for i in range(usbInstr.loaded_files):    
-            self.spectra[i].points = points[i]
-            usbInstr.recorders[i].sweeping = True
-            player = Worker(usbInstr.recorders[i].player, self.depth, i, interval, slider, play, split)
-            threadpool.start(player)
-            name = 'File ' + str(i)
-            sn = str(usbInstr.recorders[i].sn)
-            file = usbInstr.recorders[i].file
-            self.set_device_info(name, i, sn, file) # name, dev_id, sn, port)
+            if usbInstr.devices[i].enabled:
+                self.spectra[i].points = points[i]
+                usbInstr.devices[i].sweeping = True
+                player = Worker(usbInstr.devices[i].server, self.depth, i, interval, slider, play, split)
+                threadpool.start(player)
 
     def stop_playback(self):
-        for i in range(self.dev_count):
-            if usbInstr.recorders[i].sweeping:
-                usbInstr.recorders[i].sweeping = False
+        file_count = usbInstr.loaded_files
+        for i in range(file_count):
+            if usbInstr.devices[i].sweeping:
+                usbInstr.devices[i].sweeping = False
     
     def set_speed(self):
         spinbox = QtTSA.speed.value()
@@ -842,6 +826,31 @@ class Analyser:
         saver = Worker(save_sweep, folder, file_name, frequencies, data_arr, ser_num)
         threadpool.start(saver)  # workers are deleted when thread ends
     
+    # def load_data(self):
+    #     '''loads .npy files made by the recorder into data arrays for playback'''
+    #     dialog = QFileDialog()
+    #     folder = settings.ui.save_folder.text()
+    #     dialog.setDirectory(folder)
+    #     file_name = dialog.getOpenFileName(caption="Select file to load", filter="NumPy array (*.npy)")[0]
+    #     if file_name != '':
+    #         loader = Worker(usbInstr.read_file, file_name)
+
+    #     if usbInstr.loaded_files == 4:
+    #         message = ('Clear all 4 recordings loaded in memory and\rstart loading new ones in their place?')
+    #         load_new = popUp(offset, message, 'OkC', 'Question')
+    #         if load_new == QMessageBox.StandardButton.Ok:
+    #             for j in range(4):
+    #                 usbInstr.recorders[j].reset_arr()
+    #                 # self.set_device_info('', j, -1, '') 
+    #             usbInstr.loaded_files = 0
+    #             threadpool.start(loader)
+    #         else:
+    #             return
+
+    #     usbCheck.stop()  # stop probing the usb ports for analyser hardware
+    #     threadpool.start(loader)
+    #     QtTSA.vortex.show()
+    
     def load_data(self):
         '''loads .npy files made by the recorder into data arrays for playback'''
         dialog = QFileDialog()
@@ -849,33 +858,36 @@ class Analyser:
         dialog.setDirectory(folder)
         file_name = dialog.getOpenFileName(caption="Select file to load", filter="NumPy array (*.npy)")[0]
         if file_name != '':
-            loader = Worker(usbInstr.read_file, file_name)
-        if usbInstr.loaded_files == 4:
-            message = ('Clear all 4 recordings loaded in memory and\rstart loading new ones in their place?')
-            load_new = popUp(offset, message, 'OkC', 'Question')
-            if load_new == QMessageBox.StandardButton.Ok:
-                for j in range(4):
-                    usbInstr.recorders[j].reset_arr()
-                    self.set_device_info('', j, -1, '') 
-                usbInstr.loaded_files = 0
-                threadpool.start(loader)
-            else:
-                return
+            loader = Worker(usbInstr.load_player, file_name)
+        else:
+            return
+        usbCheck.stop()  # stop probing the usb ports for analyser hardware
         threadpool.start(loader)
         QtTSA.vortex.show()
     
+    # def clear_data(self):
+    #     self.stop_playback()
+    #     self.stop_recording()
+    #     for i in range(usbInstr.loaded_files): 
+    #         usbInstr.recorders[i].reset_arr()
+    #         # self.set_device_info('', i, -1, '') # name, dev_id, sn, port)
+    #     for spectrum in self.spectra:
+    #         spectrum.waterfall.clear()
+    #     usbInstr.loaded_files = 0
+    #     with QSignalBlocker(QtTSA.vortex):
+    #         QtTSA.vortex.setValue(0)
+    #     QtTSA.vortex.hide()
+    #     usbCheck.start()  # start probing the usb ports for analyser hardware
+
     def clear_data(self):
         self.stop_playback()
-        self.stop_recording()
-        for i in range(usbInstr.loaded_files): 
-            usbInstr.recorders[i].reset_arr()
-            self.set_device_info('', i, -1, '') # name, dev_id, sn, port)
+        usbInstr.close_player()
         for spectrum in self.spectra:
             spectrum.waterfall.clear()
-        usbInstr.loaded_files = 0
         with QSignalBlocker(QtTSA.vortex):
             QtTSA.vortex.setValue(0)
         QtTSA.vortex.hide()
+        usbCheck.start()  # start probing the usb ports for analyser hardware
 
     def time_path_indicator(self, position):
         with QSignalBlocker(QtTSA.vortex):
@@ -1325,11 +1337,11 @@ def locate_db(dbName):
         return personalDir
 
     # 3. if not, check if database file exists in the app directory
-        file_path = resource_path(dbName)
-        if os.path.isfile(file_path):
-            shutil.copy(file_path, personalDir)
-            logging.info(f'{dbName} copied from {file_path} to {personalDir}')
-            return personalDir
+    file_path = resource_path(dbName)
+    if os.path.isfile(file_path):
+        shutil.copy(file_path, personalDir)
+        logging.info(f'{dbName} copied from {file_path} to {personalDir}')
+        return personalDir
 
     # 4. If not, then look in current working folder & where the python file is stored/linked from
     workingDirs = [os.path.dirname(__file__), os.path.dirname(os.path.realpath(__file__)), os.getcwd()]
@@ -1512,16 +1524,17 @@ def save_location_valid():
 def connectActive():
     '''Connect signals from controls that send messages to tinySA or use trace data.  Called by setGUI().'''
 
-    QtTSA.atten_box.valueChanged.connect(tinySA.setting_change)
+    QtTSA.atten_box.editingFinished.connect(tinySA.setting_change)
     QtTSA.atten_auto.clicked.connect(tinySA.setting_change)
     QtTSA.spur_box.currentIndexChanged.connect(tinySA.setting_change)
     QtTSA.lna_box.clicked.connect(tinySA.setting_change)
 
     # frequencies
-    QtTSA.start_freq.valueChanged.connect(tinySA.setStartFreq)
-    QtTSA.stop_freq.valueChanged.connect(tinySA.setStartFreq)
-    QtTSA.centre_freq.valueChanged.connect(tinySA.setCentreFreq)  # centre/span mode
-    QtTSA.span_freq.valueChanged.connect(tinySA.setCentreFreq)  # centre/span mode
+    QtTSA.start_freq.editingFinished.connect(tinySA.setStartFreq)
+    QtTSA.stop_freq.editingFinished.connect(tinySA.setStartFreq)
+    QtTSA.centre_freq.editingFinished.connect(tinySA.setCentreFreq)  # centre/span mode
+    QtTSA.span_freq.editingFinished.connect(tinySA.setCentreFreq)  # centre/span mode
+    
     QtTSA.band_box.currentIndexChanged.connect(band_changed)
     QtTSA.setRange.clicked.connect(tinySA.sweep_as_zoomed)
     QtTSA.setToMkr.clicked.connect(tinySA.setToMarker)
@@ -1529,7 +1542,7 @@ def connectActive():
     QtTSA.rbw_auto.clicked.connect(tinySA.rbwChanged)
     QtTSA.rbw_box.currentIndexChanged.connect(tinySA.rbwChanged)
     QtTSA.points_auto.stateChanged.connect(pointsChanged)
-    QtTSA.points_box.valueChanged.connect(pointsChanged)
+    QtTSA.points_box.editingFinished.connect(pointsChanged)
 
     # QtTSA.sampleRepeat.valueChanged.connect(tinySA.sampleRep)
 
@@ -1644,6 +1657,12 @@ def connectPassive():
     QtTSA.speed.valueChanged.connect(tinySA.set_speed)
     QtTSA.eject.clicked.connect(tinySA.clear_data)
     QtTSA.vortex.valueChanged.connect(lambda:tinySA.start_playback(False))
+    
+    # device enable
+    QtTSA.dev0.stateChanged.connect(lambda: usbInstr.toggle_dev_state(0, QtTSA.dev0.isChecked()))
+    QtTSA.dev1.stateChanged.connect(lambda: usbInstr.toggle_dev_state(1, QtTSA.dev1.isChecked()))
+    QtTSA.dev2.stateChanged.connect(lambda: usbInstr.toggle_dev_state(2, QtTSA.dev2.isChecked()))
+    QtTSA.dev3.stateChanged.connect(lambda: usbInstr.toggle_dev_state(3, QtTSA.dev3.isChecked()))
 
 ###############################################################################
 # Instantiate classes

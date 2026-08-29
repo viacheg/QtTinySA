@@ -1422,6 +1422,9 @@ and Colours</string>
          <property name="correctionMode">
           <enum>QAbstractSpinBox::CorrectionMode::CorrectToNearestValue</enum>
          </property>
+         <property name="keyboardTracking">
+          <bool>true</bool>
+         </property>
          <property name="prefix">
           <string/>
          </property>
