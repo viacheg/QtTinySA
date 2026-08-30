@@ -122,6 +122,22 @@ class Analyser:
         self.points = 101
 
         self.wf_data = np.ndarray(2)
+        self.record_number = QtWidgets.QLabel('Record no: 0', QtTSA.left_frame)
+        self.record_number.setToolTip('Number of completed sweeps in the current recording')
+        self.record_number.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        QtTSA.gridLayout_3.addWidget(self.record_number, 19, 0, 1, 2)
+        self.record_number.hide()
+        self.saved_recording = QtWidgets.QLabel(QtTSA.left_frame)
+        self.saved_recording.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.saved_recording.setWordWrap(True)
+        QtTSA.gridLayout_3.addWidget(self.saved_recording, 20, 0, 1, 2)
+        self.saved_recording.hide()
+        QtTSA.stop.setEnabled(False)
+        self.scan_button('Start scan')
+
+    def update_stop_button(self):
+        active = any(recorder.recording or recorder.sweeping for recorder in usbInstr.recorders)
+        QtTSA.stop.setEnabled(active)
 
     def setGraphs(self):
         self.phaseNoise = PhaseNoiseGraph(phasenoise.ui.plotWidget, np.ndarray, np.ndarray, 1)
@@ -167,6 +183,12 @@ class Analyser:
             self.updateGUI(route, freq, levl, maxl, minl, buffer, ser_num, dev_id, timestamp, split, sweep_end)
             if usbInstr.recorders[dev_id].recording and sweep_end:
                 usbInstr.recorders[dev_id].record(freq, levl, ser_num)       
+                if dev_id == 0:
+                    self.record_number.setText(f'Record no: {usbInstr.recorders[dev_id].row_count}')
+                    maximum_records = settings.ui.maxWF.value()
+                    if maximum_records and usbInstr.recorders[dev_id].row_count >= maximum_records:
+                        logging.info(f'Maximum recording count of {maximum_records} reached; saving recording')
+                        self.stop_recording()
         except TypeError:
             logging.info(f'failed to route data from {dev_id} of {self.dev_count} to spectrum trace')
             usbInstr.stop(restart=False)
@@ -583,7 +605,9 @@ class Analyser:
                     spectrum.count = 0  # resets the counter only for the traces being updated by this route
 
     def scan_button(self, action):
+        icon_name = 'media-playback-stop' if action == 'Stop Scan' else 'media-playback-start'
         QtTSA.scan_button.setText(action)
+        QtTSA.scan_button.setIcon(QIcon.fromTheme(icon_name))
         QtTSA.scan_button.setEnabled(True)
 
     def set_dev_combo(self, ui_name, dev_name):
@@ -593,20 +617,21 @@ class Analyser:
         if usbInstr.devices:
             for device in usbInstr.devices:
                 if device:
-                    if device.name in dev_name:
+                    if device.name and any(device.name.startswith(name) for name in dev_name):
                         if device.sweeping:
                             popUp(QtTSA, "Cannot browse whilst a scan is running", 'Ok', 'Info')
                         else:
                             with QSignalBlocker(ui_name.device):
                                 ui_name.device.addItem(device.name + ' serial ' + str(device.sn))
                                 self.dev_ref.append(device)  # keep a reference to the device for file ops
-            device = self.dev_ref[ui_name.device.currentIndex()]
+        return bool(self.dev_ref)
 
     def file_browser(self):
-        if usbInstr.devices:
-            self.set_dev_combo(filebrowse.ui, ('tinySA ULTRA ZS405', 'tinySA ULTRA ZS406', 'tinySA ULTRA ZS407'))
+        if self.set_dev_combo(filebrowse.ui, ('tinySA ULTRA',)):
             filebrowse.ui.show()
             self.list_files()
+        else:
+            popUp(QtTSA, 'No compatible tinySA Ultra device is available', 'Ok', 'Info')
 
     def list_files(self):
         device = self.dev_ref[filebrowse.ui.device.currentIndex()]
@@ -633,7 +658,9 @@ class Analyser:
             filebrowse.ui.picture.setPixmap(pixmap)
 
     def correction_window(self):
-        self.set_dev_combo(offset.ui, ('tinySA ULTRA ZS405', 'tinySA ULTRA ZS406', 'tinySA ULTRA ZS407'))
+        if not self.set_dev_combo(offset.ui, ('tinySA ULTRA',)):
+            popUp(QtTSA, 'No compatible tinySA Ultra device is available', 'Ok', 'Info')
+            return
         offset.ui.progress.setValue(0)
         offset.ui.show()
 
@@ -742,6 +769,9 @@ class Analyser:
             
         self.stop_playback()
         QtTSA.record.setEnabled(False)
+        self.record_number.setText('Record no: 0')
+        self.record_number.show()
+        self.saved_recording.hide()
         if not usbInstr.is_scanning:
             QtTSA.scan_button.clicked.emit()
         logging.debug(f'start recording from {self.dev_count} devices')
@@ -751,14 +781,23 @@ class Analyser:
             usbInstr.recorders[i].sn = usbInstr.devices[i].sn
             usbInstr.recorders[i].id = i
             usbInstr.recorders[i].recording = True
+        self.update_stop_button()
 
     def stop_recording(self):
         folder = settings.ui.save_folder.text()
+        saved_files = []
         for i in range(self.dev_count):
             if usbInstr.recorders[i].recording:
                 usbInstr.recorders[i].recording = False
-                usbInstr.recorders[i].save_recording(folder)
+                saved_files.append(usbInstr.recorders[i].save_recording(folder))
         QtTSA.record.setEnabled(True)
+        self.record_number.hide()
+        if saved_files:
+            file_names = [os.path.basename(file_name) for file_name in saved_files]
+            self.saved_recording.setText('Saved:\n' + '\n'.join(file_names))
+            self.saved_recording.setToolTip('\n'.join(saved_files))
+            self.saved_recording.show()
+        self.update_stop_button()
 
         
     def start_playback(self, play):
@@ -821,11 +860,13 @@ class Analyser:
             sn = str(usbInstr.recorders[i].sn)
             file = usbInstr.recorders[i].file
             self.set_device_info(name, i, sn, file) # name, dev_id, sn, port)
+        self.update_stop_button()
 
     def stop_playback(self):
         for i in range(self.dev_count):
             if usbInstr.recorders[i].sweeping:
                 usbInstr.recorders[i].sweeping = False
+        self.update_stop_button()
     
     def set_speed(self):
         spinbox = QtTSA.speed.value()
@@ -1841,7 +1882,17 @@ correctiontext.tm.select()
 numbers = ModelView('numbers', config, ())
 numbers.createMapper()
 numbers.mapWidget('numbers')  # uses mapping table from database
+numbers.dwm.addMapping(QtTSA.memBox, 31)  # persist waterfall depth / sweeps per saved file
+numbers.dwm.addMapping(settings.ui.maxWF, 32)  # persist maximum recording sweeps
 numbers.tm.select()
+record = numbers.tm.record(0)
+new_values = {31: QtTSA.memBox.value(), 32: settings.ui.maxWF.value()}
+if any(record.value(column) is None for column in new_values):
+    for column, value in new_values.items():
+        if record.value(column) is None:
+            record.setValue(column, value)
+    numbers.tm.setRecord(0, record)
+    numbers.tm.submitAll()
 numbers.dwm.setCurrentIndex(0)
 
 QtTSA.show()

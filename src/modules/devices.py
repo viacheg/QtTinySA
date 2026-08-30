@@ -980,6 +980,7 @@ class Recorder(QObject):
             threadpool.start(saver)
             self.row_count = 0
             self.reset_arr()
+            return file_name + '.npy'
     
     def save_npy(self, file_name, data_arr):
         # saving as text would take 5x as long and have a 5x larger file

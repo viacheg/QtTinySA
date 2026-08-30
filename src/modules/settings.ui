@@ -108,7 +108,7 @@
        </font>
       </property>
       <property name="text">
-       <string>Maximum number of sweeps per file (max waterfall depth)</string>
+       <string>Maximum recording sweeps (0 = unlimited)</string>
       </property>
      </widget>
     </item>
@@ -562,6 +562,9 @@
        <font>
         <pointsize>12</pointsize>
        </font>
+      </property>
+      <property name="toolTip">
+       <string>Stop and save the recording after this many sweeps</string>
       </property>
      </widget>
     </item>
